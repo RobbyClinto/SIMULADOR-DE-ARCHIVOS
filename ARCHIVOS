@@ -1,0 +1,368 @@
+import os
+import shutil
+import tkinter as tk
+from tkinter import ttk, filedialog, messagebox, simpledialog
+import datetime
+from PIL import Image, ImageTk
+import ttkthemes
+import PyPDF2
+from docx import Document
+
+class Nodo:
+    def __init__(self, path):
+        self.path = path
+        self.hijos = []
+        self.nombre = os.path.basename(path)
+        self.tamano = os.path.getsize(path)
+        self.modificado = datetime.datetime.fromtimestamp(os.path.getmtime(path)).strftime("%Y-%m-%d %H:%M:%S")
+        self.tipo = "directorio" if os.path.isdir(path) else "archivo"
+
+    def agregar_hijo(self, nodo):
+        self.hijos.append(nodo)
+
+class Arbol:
+    def __init__(self, raiz):
+        self.raiz = Nodo(raiz)
+        self._construir_arbol(self.raiz)
+
+    def _construir_arbol(self, nodo):
+        try:
+            if os.path.isdir(nodo.path):
+                for item in os.listdir(nodo.path):
+                    full_path = os.path.join(nodo.path, item)
+                    hijo_nodo = Nodo(full_path)
+                    nodo.agregar_hijo(hijo_nodo)
+                    if os.path.isdir(full_path):
+                        self._construir_arbol(hijo_nodo)
+        except PermissionError:
+            pass
+
+    def obtener_nodo(self, path):
+        return self._buscar_nodo(self.raiz, path)
+
+    def _buscar_nodo(self, nodo, path):
+        if nodo.path == path:
+            return nodo
+        for hijo in nodo.hijos:
+            resultado = self._buscar_nodo(hijo, path)
+            if resultado:
+                return resultado
+        return None
+
+class FileManagerApp:
+    def __init__(self, master):
+        self.master = master
+        self.master.title("Organizador de Archivos Pro")
+        self.master.geometry("1200x800")
+        
+        # Aplicar tema
+        self.style = ttkthemes.ThemedStyle(self.master)
+        self.style.set_theme("arc")
+
+        self.current_dir = os.getcwd()
+        self.arbol = Arbol(self.current_dir)
+        self.load_icons()
+        self.create_widgets()
+        self.update_tree()
+
+    def load_icons(self):
+        icon_size = (20, 20)
+        icon_names = ["file", "folder", "update", "up", "change", "copy", "move", "delete", 
+                      "new_file", "new_folder", "search", "text_search", "details", "date"]
+        self.icons = {}
+        for name in icon_names:
+            try:
+                self.icons[name] = ImageTk.PhotoImage(Image.open(f"{name}_icon.png").resize(icon_size))
+            except FileNotFoundError:
+                print(f"Warning: Icon {name}_icon.png not found. Using default icon.")
+                self.icons[name] = None
+
+    def create_widgets(self):
+        # Frame principal
+        self.main_frame = ttk.Frame(self.master)
+        self.main_frame.pack(fill=tk.BOTH, expand=True)
+
+        # Barra de dirección
+        self.path_var = tk.StringVar()
+        self.path_entry = ttk.Entry(self.main_frame, textvariable=self.path_var, font=("Arial", 10))
+        self.path_entry.pack(fill=tk.X, padx=10, pady=(10, 5))
+        self.path_entry.bind("<Return>", self.on_path_change)
+
+        # Frame para árbol
+        self.tree_frame = ttk.Frame(self.main_frame)
+        self.tree_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=5)
+
+        # Árbol de archivos
+        self.tree = ttk.Treeview(self.tree_frame, columns=("size", "modified"), selectmode="browse")
+        self.tree.heading("#0", text="Nombre")
+        self.tree.heading("size", text="Tamaño")
+        self.tree.heading("modified", text="Modificado")
+        self.tree.column("#0", width=400)
+        self.tree.column("size", width=100, anchor="center")
+        self.tree.column("modified", width=150, anchor="center")
+        self.tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        # Scrollbar para el árbol
+        self.tree_scrollbar = ttk.Scrollbar(self.tree_frame, orient="vertical", command=self.tree.yview)
+        self.tree_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        self.tree.configure(yscrollcommand=self.tree_scrollbar.set)
+
+        # Frame para botones con scrollbar horizontal
+        self.button_canvas = tk.Canvas(self.main_frame)
+        self.button_canvas.pack(fill=tk.X, padx=10, pady=0)
+
+        self.button_frame = ttk.Frame(self.button_canvas)
+        self.button_canvas.create_window((0, 0), window=self.button_frame, anchor="nw")
+
+        # Scrollbar horizontal para los botones
+        self.button_scrollbar = ttk.Scrollbar(self.main_frame, orient="horizontal", command=self.button_canvas.xview)
+        self.button_scrollbar.pack(fill=tk.X, padx=10)
+        self.button_canvas.configure(xscrollcommand=self.button_scrollbar.set)
+
+        # Frame superior e inferior para los botones
+        self.top_button_frame = ttk.Frame(self.button_frame)
+        self.top_button_frame.pack(fill=tk.X, pady=(0, 5))
+        self.bottom_button_frame = ttk.Frame(self.button_frame)
+        self.bottom_button_frame.pack(fill=tk.X, pady=(5, 0))
+
+        # Botones para las operaciones
+        top_operations = [
+            ("Actualizar", self.update_tree, "update"),
+            ("Subir", self.go_up, "up"),
+            ("Cambiar directorio", self.change_directory, "change"),
+            ("Copiar", self.copy_item, "copy"),
+            ("Mover/Renombrar", self.move_rename_item, "move"),
+            ("Eliminar", self.delete_item, "delete"),
+            ("Crear archivo", self.create_file, "new_file"),
+            ("Crear directorio", self.create_directory, "new_folder")
+        ]
+
+        bottom_operations = [
+        
+            ("Buscar", self.search_items, "search"),
+            ("Buscar texto", self.search_text, "text_search"),
+            ("Detalles", self.show_details, "details"),
+            ("Actualizar fecha", self.update_file_date, "date")
+        ]
+
+        for text, command, icon in top_operations:
+            btn = ttk.Button(self.top_button_frame, text=text, command=command, image=self.icons[icon], compound=tk.LEFT)
+            btn.pack(side=tk.LEFT, padx=10)
+
+        for text, command, icon in bottom_operations:
+            btn = ttk.Button(self.bottom_button_frame, text=text, command=command, image=self.icons[icon], compound=tk.LEFT)
+            btn.pack(side=tk.LEFT, padx=10)
+
+        # Actualizar el scrollregion después de añadir los botones
+        self.button_frame.update_idletasks()
+        self.button_canvas.config(scrollregion=self.button_canvas.bbox("all"))
+
+        # Bindings
+        self.tree.bind("<Double-1>", self.on_double_click)
+
+    def update_tree(self):
+        self.tree.delete(*self.tree.get_children())
+        self.path_var.set(self.current_dir)
+        self.arbol = Arbol(self.current_dir)
+        self._insertar_nodos(self.arbol.raiz)
+
+    def _insertar_nodos(self, nodo, parent=""):
+        icon = self.icons["folder"] if nodo.tipo == "directorio" else self.icons["file"]
+        item_id = self.tree.insert(parent, "end", text=nodo.nombre, values=(f"{nodo.tamano:,d} bytes", nodo.modificado), image=icon)
+        for hijo in nodo.hijos:
+            self._insertar_nodos(hijo, item_id)
+
+    def on_double_click(self, event):
+        item = self.tree.selection()[0]
+        path = os.path.join(self.current_dir, self.tree.item(item, "text"))
+        if os.path.isdir(path):
+            self.current_dir = path
+            self.update_tree()
+
+    def go_up(self):
+        self.current_dir = os.path.dirname(self.current_dir)
+        self.update_tree()
+
+    def change_directory(self):
+        new_dir = filedialog.askdirectory(title="Seleccionar nuevo directorio", initialdir=self.current_dir)
+        if new_dir:
+            self.current_dir = new_dir
+            self.update_tree()
+
+    def on_path_change(self, event):
+        new_path = self.path_var.get()
+        if os.path.isdir(new_path):
+            self.current_dir = new_path
+            self.update_tree()
+        else:
+            messagebox.showerror("Error", "Directorio no válido")
+
+    def get_selected_path(self):
+        selected = self.tree.selection()
+        if not selected:
+            return None
+        return os.path.join(self.current_dir, self.tree.item(selected[0], "text"))
+
+    def show_details(self):
+        path = self.get_selected_path()
+        if not path:
+            messagebox.showerror("Error", "Seleccione un elemento para ver detalles")
+            return
+
+        nodo = self.arbol.obtener_nodo(path)
+        if nodo is None:
+            messagebox.showerror("Error", "No se pudo obtener la información del elemento seleccionado")
+            return
+
+        info = f"Nombre: {nodo.nombre}\n"
+        info += f"Ruta: {nodo.path}\n"
+        info += f"Tamaño: {nodo.tamano:,d} bytes\n"
+        info += f"Creado: {datetime.datetime.fromtimestamp(os.path.getctime(nodo.path))}\n"
+        info += f"Modificado: {nodo.modificado}\n"
+        info += f"Accedido: {datetime.datetime.fromtimestamp(os.path.getatime(nodo.path))}\n"
+        info += f"Tipo: {nodo.tipo.capitalize()}\n"
+        
+        messagebox.showinfo("Detalles del elemento", info)
+
+    def update_file_date(self):
+        path = self.get_selected_path()
+        if not path:
+            messagebox.showerror("Error", "Seleccione un elemento para actualizar su fecha")
+            return
+
+        try:
+            os.utime(path, None)
+            messagebox.showinfo("Éxito", f"Fecha de modificación actualizada para {os.path.basename(path)}")
+            self.update_tree()
+        except Exception as e:
+            messagebox.showerror("Error", f"No se pudo actualizar la fecha: {str(e)}")
+
+    def copy_item(self):
+        source = self.get_selected_path()
+        if not source:
+            messagebox.showerror("Error", "Seleccione un elemento para copiar")
+            return
+
+        destination = filedialog.askdirectory(title="Seleccione el destino")
+        if destination:
+            try:
+                if os.path.isfile(source):
+                    shutil.copy2(source, destination)
+                else:
+                    shutil.copytree(source, os.path.join(destination, os.path.basename(source)))
+                messagebox.showinfo("Éxito", f"{os.path.basename(source)} copiado exitosamente")
+                self.update_tree()
+            except Exception as e:
+                messagebox.showerror("Error", str(e))
+
+    def move_rename_item(self):
+        source = self.get_selected_path()
+        if not source:
+            messagebox.showerror("Error", "Seleccione un elemento para mover/renombrar")
+            return
+
+        destination = filedialog.asksaveasfilename(initialdir=self.current_dir, initialfile=os.path.basename(source))
+        if destination:
+            try:
+                shutil.move(source, destination)
+                messagebox.showinfo("Éxito", f"{os.path.basename(source)} movido/renombrado exitosamente")
+                self.update_tree()
+            except Exception as e:
+                messagebox.showerror("Error", str(e))
+
+    def delete_item(self):
+        path = self.get_selected_path()
+        if not path:
+            messagebox.showerror("Error", "Seleccione un elemento para eliminar")
+            return
+
+        if messagebox.askyesno("Confirmar", f"¿Está seguro de que desea eliminar {os.path.basename(path)}?"):
+            try:
+                if os.path.isfile(path):
+                    os.remove(path)
+                else:
+                    shutil.rmtree(path)
+                messagebox.showinfo("Éxito", f"{os.path.basename(path)} eliminado exitosamente")
+                self.update_tree()
+            except Exception as e:
+                messagebox.showerror("Error", str(e))
+
+    def create_file(self):
+        filename = filedialog.asksaveasfilename(initialdir=self.current_dir, title="Crear archivo vacío")
+        if filename:
+            try:
+                open(filename, 'a').close()
+                messagebox.showinfo("Éxito", f"Archivo {os.path.basename(filename)} creado exitosamente")
+                self.update_tree()
+            except Exception as e:
+                messagebox.showerror("Error", str(e))
+
+    def create_directory(self):
+        new_dir = filedialog.askdirectory(initialdir=self.current_dir, title="Crear nuevo directorio")
+        if new_dir:
+            try:
+                os.makedirs(new_dir, exist_ok=True)
+                messagebox.showinfo("Éxito", f"Directorio {os.path.basename(new_dir)} creado exitosamente")
+                self.update_tree()
+            except Exception as e:
+                messagebox.showerror("Error", str(e))
+
+    def search_items(self):
+        query = simpledialog.askstring("Buscar", "Ingrese el nombre del archivo o directorio:")
+        if query:
+            results = []
+            for root, dirs, files in os.walk(self.current_dir):
+                for name in dirs + files:
+                    if query.lower() in name.lower():
+                        results.append(os.path.join(root, name))
+
+            if results:
+                result_text = "\n".join(results)
+                self.show_results("Resultados de búsqueda", result_text)
+            else:
+                messagebox.showinfo("Resultados de búsqueda", "No se encontraron resultados")
+
+    def search_text(self):
+        selected_path = self.get_selected_path()
+        if not selected_path:
+            messagebox.showerror("Error", "Seleccione un archivo para buscar texto")
+            return
+
+        query = simpledialog.askstring("Buscar texto", "Ingrese el texto a buscar:")
+        if query:
+            results = []
+            try:
+                with open(selected_path, 'r', encoding='utf-8') as f:
+                    for line_num, line in enumerate(f, 1):
+                        if query.lower() in line.lower():
+                            results.append(f"Línea {line_num}: {line.strip()}")
+
+                if results:
+                    result_text = "\n".join(results)
+                    self.show_results("Resultados de búsqueda de texto", result_text)
+                else:
+                    messagebox.showinfo("Resultados de búsqueda de texto", "No se encontraron resultados")
+            except Exception as e:
+                messagebox.showerror("Error", f"No se pudo buscar texto en el archivo: {str(e)}")
+
+
+    def show_results(self, title, results):
+        results_window = tk.Toplevel(self.master)
+        results_window.title(title)
+        results_window.geometry("600x400")
+
+        text_widget = tk.Text(results_window, wrap=tk.WORD, font=("Arial", 10))
+        text_widget.pack(fill=tk.BOTH, expand=True)
+
+        scrollbar = ttk.Scrollbar(results_window, orient="vertical", command=text_widget.yview)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+        text_widget.configure(yscrollcommand=scrollbar.set)
+
+        text_widget.insert(tk.END, results)
+        text_widget.configure(state="disabled")
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = FileManagerApp(root)
+    root.mainloop()
+
